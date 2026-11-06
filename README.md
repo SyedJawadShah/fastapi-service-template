@@ -54,6 +54,7 @@ scripts/                  aws_bootstrap.sh (one-time), deploy_lightsail.sh (ever
 | `APP_ENV` | `development` | `development`, `test` or `production`; production disables API docs and enables HSTS |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING` or `ERROR` |
 | `GIT_SHA` | `unknown` | Build version, reported by `/healthz`; set at image build time |
+| `MAX_REQUEST_BYTES` | `26214400` (25 MiB) | Largest request body accepted; larger ones get 413 before the app reads them |
 
 ## Quality gates
 

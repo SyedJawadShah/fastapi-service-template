@@ -4,18 +4,27 @@ import html
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app import health
 from app.logging_setup import configure_logging
 from app.middleware import (
+    BodySizeLimitMiddleware,
     RequestContextMiddleware,
+    RequestTooLargeError,
     SecurityHeadersMiddleware,
     apply_security_headers,
+    error_response,
 )
 from app.settings import Settings, get_settings
 
 log = logging.getLogger(__name__)
+
+
+def _request_id(request: Request) -> str | None:
+    request_id: str | None = getattr(request.state, "request_id", None)
+    return request_id
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -30,24 +39,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=None if settings.is_production else "/openapi.json",
     )
     app.state.settings = settings
-    # Starlette runs the last-added middleware first.
+    # Starlette runs the last-added middleware first, so the size limit sits innermost and
+    # its 413 responses still get security headers and a request ID.
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
     app.add_middleware(SecurityHeadersMiddleware, hsts=settings.is_production)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(health.router)
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Say which field had which kind of problem, but never echo the submitted value:
+        # it can be personal data, and FastAPI's default response includes it.
+        problems = [
+            {
+                "field": ".".join(str(part) for part in error.get("loc", ())),
+                "problem": str(error.get("type", "invalid")),
+            }
+            for error in exc.errors()
+        ]
+        request_id = _request_id(request)
+        log.info(
+            "invalid_request",
+            extra={"request_id": request_id, "fields": [p["field"] for p in problems]},
+        )
+        return error_response("invalid_request", 422, request_id, problems=problems)
+
+    @app.exception_handler(RequestTooLargeError)
+    async def request_too_large(request: Request, _exc: RequestTooLargeError) -> JSONResponse:
+        return error_response("request_too_large", 413, _request_id(request))
+
     @app.exception_handler(Exception)
     async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
-        request_id = getattr(request.state, "request_id", None)
+        request_id = _request_id(request)
         log.error(
             "unhandled_error",
             exc_info=exc,
             extra={"request_id": request_id, "exc_type": type(exc).__name__},
         )
-        response = JSONResponse(
-            {"error": "internal_error", "request_id": request_id}, status_code=500
-        )
-        if request_id:
-            response.headers["X-Request-ID"] = request_id
+        # This handler runs outside the middleware stack, so it adds the headers itself.
+        response = error_response("internal_error", 500, request_id)
         apply_security_headers(response, request.url.path, hsts=settings.is_production)
         return response
 

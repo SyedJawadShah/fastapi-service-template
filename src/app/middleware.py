@@ -1,15 +1,76 @@
-"""HTTP middleware: request IDs, request logging and security headers."""
+"""HTTP middleware: request IDs, request logging, security headers and body size limits."""
 
 import logging
 import time
 import uuid
 
+from fastapi import HTTPException
+from starlette.datastructures import Headers
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import Response
-from starlette.types import ASGIApp
+from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 log = logging.getLogger("app.request")
+
+
+def error_response(
+    error: str, status_code: int, request_id: str | None, **extra: object
+) -> JSONResponse:
+    """The one error shape clients see: a code and the request ID, never internal details."""
+    response = JSONResponse(
+        {"error": error, "request_id": request_id, **extra}, status_code=status_code
+    )
+    if request_id:
+        response.headers["X-Request-ID"] = request_id
+    return response
+
+
+class RequestTooLargeError(HTTPException):
+    """Raised mid-stream when a request body passes the limit.
+
+    It subclasses HTTPException because FastAPI re-raises those from body parsing instead of
+    turning them into a generic 400.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail="request_too_large")
+
+
+class BodySizeLimitMiddleware:
+    """Reject request bodies larger than max_bytes before the application reads them.
+
+    A declared Content-Length over the limit is refused without reading the body; bodies sent
+    without one are counted as they arrive and stopped at the limit.
+    """
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = Headers(scope=scope).get("content-length", "")
+        if declared.isdigit() and int(declared) > self.max_bytes:
+            request_id: str | None = scope.get("state", {}).get("request_id")
+            await error_response("request_too_large", 413, request_id)(scope, receive, send)
+            return
+
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise RequestTooLargeError
+            return message
+
+        await self.app(scope, limited_receive, send)
+
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",

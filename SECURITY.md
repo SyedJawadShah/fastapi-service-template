@@ -9,6 +9,10 @@ Covered by tests (`tests/`):
   a restrictive `Content-Security-Policy`, and `Cache-Control: no-store`. HSTS in production.
 - Interactive API docs and the OpenAPI schema are disabled in production.
 - Unhandled errors return a generic body with a request ID; exception details stay in logs.
+- Validation errors (422) name the field and the kind of problem but never echo the
+  submitted value, which may be personal data.
+- Request bodies over `MAX_REQUEST_BYTES` are refused with 413 before the app reads them:
+  a declared size is checked up front, and bodies without one are counted as they arrive.
 - Request logs record the route template, status and timing, never query strings or raw
   paths, so identifiers in URLs stay out of logs.
 - HTML output is escaped.
