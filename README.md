@@ -85,6 +85,18 @@ One-time setup:
 3. Push to `main`, or run the Deploy workflow manually. Until the variables exist, the deploy
    job is skipped rather than failed.
 
+App settings and secrets: put any settings the app reads (session keys, demo accounts, API
+keys) in one GitHub secret, `APP_ENV_JSON`, as a JSON object of strings. Each deploy merges it
+into the container's environment; `APP_ENV` and `GIT_SHA` are always set by the deploy. The
+deploy log lists only the setting names. For example, with a freshly generated session key:
+
+```bash
+gh secret set APP_ENV_JSON --body "{\"SECRET_KEY\": \"$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')\"}"
+```
+
+Run `gh secret set APP_ENV_JSON` with no `--body` to paste the JSON without it appearing in
+shell history. Changing the secret takes effect on the next deploy.
+
 Rollback: Lightsail keeps the last 50 deployment versions; redeploy one from the console, or
 revert the commit and push.
 

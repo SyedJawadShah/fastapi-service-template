@@ -3,7 +3,8 @@
 # version is live. Used by .github/workflows/deploy.yml; also runnable from an x86_64 host.
 #
 # Usage: scripts/deploy_lightsail.sh <local-image:tag> <git-sha>
-# Env:   AWS_REGION, SERVICE_NAME, AWS credentials; optional DEPLOY_TIMEOUT_SECONDS
+# Env:   AWS_REGION, SERVICE_NAME, AWS credentials; optional DEPLOY_TIMEOUT_SECONDS and
+#        APP_ENV_JSON (JSON object of extra app settings, e.g. secrets)
 # Needs: aws CLI v2, lightsailctl, docker, jq, curl
 set -euo pipefail
 
@@ -51,17 +52,35 @@ if [[ -z "$registered" ]]; then
 fi
 echo "Registered $registered"
 
-containers=$(jq -n --arg name "$container" --arg image "$registered" --arg sha "$sha" \
-  --arg port "$port" \
-  '{($name): {image: $image, ports: {($port): "HTTP"},
-              environment: {APP_ENV: "production", LOG_LEVEL: "INFO", GIT_SHA: $sha}}}')
+# App settings, secrets included, come from the APP_ENV_JSON secret: a JSON object of string
+# values. They reach Lightsail through a private temp file, never the command line or the log.
+export APP_ENV_JSON="${APP_ENV_JSON:-}"
+if [[ -n "$APP_ENV_JSON" ]] && ! jq -e 'type == "object" and all(.[]; type == "string")' \
+  <<<"$APP_ENV_JSON" >/dev/null 2>&1; then
+  echo "APP_ENV_JSON must be a JSON object whose values are all strings" >&2
+  exit 1
+fi
+if [[ -n "$APP_ENV_JSON" ]]; then
+  echo "App settings from APP_ENV_JSON: $(jq -r 'keys | join(", ")' <<<"$APP_ENV_JSON")"
+fi
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
+(
+  umask 077
+  jq -n --arg name "$container" --arg image "$registered" --arg sha "$sha" --arg port "$port" \
+    '(env.APP_ENV_JSON | if . == "" then {} else fromjson end) as $extra
+     | {($name): {image: $image, ports: {($port): "HTTP"},
+                  environment: ({LOG_LEVEL: "INFO"} + $extra
+                                + {APP_ENV: "production", GIT_SHA: $sha})}}' \
+    >"$workdir/containers.json"
+)
 endpoint=$(jq -n --arg name "$container" --argjson port "$port" \
   '{containerName: $name, containerPort: $port,
     healthCheck: {path: "/healthz", intervalSeconds: 10, timeoutSeconds: 5,
                   healthyThreshold: 2, unhealthyThreshold: 3, successCodes: "200"}}')
 
 version=$(lightsail create-container-service-deployment --service-name "$SERVICE_NAME" \
-  --containers "$containers" --public-endpoint "$endpoint" \
+  --containers "file://$workdir/containers.json" --public-endpoint "$endpoint" \
   --query 'containerService.nextDeployment.version' --output text)
 echo "Created deployment version $version; waiting for it to become active"
 

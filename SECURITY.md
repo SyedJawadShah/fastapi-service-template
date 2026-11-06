@@ -34,8 +34,10 @@ Enforced by CI and hooks:
   accepts the `main` branch or `production` environment of any repository owned by
   `GITHUB_OWNER`. Set `GITHUB_REPO` in `scripts/aws_bootstrap.sh` to narrow it to one
   repository.
-- Lightsail deployment environment variables are visible to anyone with Lightsail access to
-  the AWS account; they are not a secret store.
+- App secrets are stored as the GitHub secret `APP_ENV_JSON` and passed to Lightsail at deploy
+  time through a private temporary file, never in logs or command arguments. Once deployed,
+  they are visible to anyone with Lightsail access to the AWS account, which is not a
+  dedicated secret store.
 - `lightsailctl` is downloaded from AWS's "latest" URL without checksum verification.
 - Base images are pinned by tag, not digest.
 
