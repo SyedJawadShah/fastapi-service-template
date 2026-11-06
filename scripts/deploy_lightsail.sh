@@ -18,6 +18,27 @@ port=8000
 
 lightsail() { aws lightsail --region "$AWS_REGION" "$@"; }
 
+# A new service stays PENDING for a few minutes, and a service mid-deployment rejects
+# another deployment, so wait until it can accept one.
+deadline=$((SECONDS + timeout_seconds))
+while true; do
+  service_state=$(lightsail get-container-services --service-name "$SERVICE_NAME" \
+    --query 'containerServices[0].state' --output text)
+  case "$service_state" in
+    READY | RUNNING) break ;;
+    DISABLED | DELETING)
+      echo "Container service $SERVICE_NAME is $service_state; cannot deploy." >&2
+      exit 1
+      ;;
+  esac
+  if ((SECONDS >= deadline)); then
+    echo "Timed out waiting for $SERVICE_NAME to be ready (state: $service_state)" >&2
+    exit 1
+  fi
+  echo "Service is $service_state; waiting"
+  sleep 15
+done
+
 echo "Pushing $image to $SERVICE_NAME"
 push_output=$(lightsail push-container-image \
   --service-name "$SERVICE_NAME" --label "$container" --image "$image")
