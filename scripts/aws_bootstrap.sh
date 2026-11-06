@@ -16,6 +16,7 @@
 #
 # Optional env:
 #   GITHUB_REPO   repo allowed to deploy (default "*": any repo owned by GITHUB_OWNER)
+#   GITHUB_OWNER_ID  numeric GitHub account ID (default: looked up from the GitHub API)
 #   SERVICE_NAME  Lightsail container service name (default "service")
 #   POWER         nano|micro|small|medium|large|xlarge (default "micro"; changeable later)
 #   ROLE_NAME     IAM role name (default "github-deploy-lightsail")
@@ -29,7 +30,7 @@ POWER="${POWER:-micro}"
 ROLE_NAME="${ROLE_NAME:-github-deploy-lightsail}"
 OIDC_HOST="token.actions.githubusercontent.com"
 
-for tool in aws jq; do
+for tool in aws jq curl; do
   command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 1; }
 done
 
@@ -46,12 +47,22 @@ else
   echo "Created GitHub OIDC provider"
 fi
 
-# GitHub sends the environment form when the job's environment applies, and the branch form
-# when it does not (deployment environments are unavailable for private repos on free plans).
-env_subject="repo:${GITHUB_OWNER}/${GITHUB_REPO}:environment:production"
-branch_subject="repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/main"
+# GitHub's token subject names the repository either as "owner/repo" or, with immutable
+# subjects, as "owner@<owner-id>/repo@<repo-id>". The numeric IDs pin the real account, so a
+# look-alike or re-registered username cannot match. Each form ends with the environment
+# when the job's environment applies, or with the branch when it does not (deployment
+# environments are unavailable for private repos on free plans).
+if [[ -z "${GITHUB_OWNER_ID:-}" ]]; then
+  GITHUB_OWNER_ID=$(curl -fsS "https://api.github.com/users/${GITHUB_OWNER}" | jq -r .id)
+fi
+[[ "$GITHUB_OWNER_ID" =~ ^[0-9]+$ ]] || { echo "Could not look up GITHUB_OWNER_ID" >&2; exit 1; }
+if [[ "$GITHUB_REPO" == "*" ]]; then immutable_repo="*"; else immutable_repo="${GITHUB_REPO}@*"; fi
+subjects=$(jq -n \
+  --arg legacy "repo:${GITHUB_OWNER}/${GITHUB_REPO}" \
+  --arg immutable "repo:${GITHUB_OWNER}@${GITHUB_OWNER_ID}/${immutable_repo}" \
+  '[$immutable, $legacy] | map(. + ":environment:production", . + ":ref:refs/heads/main")')
 trust=$(jq -n --arg provider "$provider_arn" --arg host "$OIDC_HOST" \
-  --arg env_sub "$env_subject" --arg branch_sub "$branch_subject" '{
+  --argjson subjects "$subjects" '{
   Version: "2012-10-17",
   Statement: [{
     Effect: "Allow",
@@ -59,7 +70,7 @@ trust=$(jq -n --arg provider "$provider_arn" --arg host "$OIDC_HOST" \
     Action: "sts:AssumeRoleWithWebIdentity",
     Condition: {
       StringEquals: {("\($host):aud"): "sts.amazonaws.com"},
-      StringLike: {("\($host):sub"): [$env_sub, $branch_sub]}
+      StringLike: {("\($host):sub"): $subjects}
     }
   }]
 }')
@@ -71,7 +82,7 @@ else
     --max-session-duration 3600 --description "GitHub Actions deploys to Lightsail" >/dev/null
   echo "Created role $ROLE_NAME"
 fi
-echo "Deploys allowed from: $env_subject or $branch_subject"
+echo "Deploys allowed from: $(jq -r 'join(", ")' <<<"$subjects")"
 
 permissions=$(jq -n '{
   Version: "2012-10-17",
