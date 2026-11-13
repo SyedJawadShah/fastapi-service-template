@@ -5,7 +5,7 @@ description = "Python web service template: typed, tested, containerised, with C
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "fastapi>=0.115",
+    "fastapi>=0.162.2",
     "pydantic-settings>=2.6",
     "uvicorn>=0.32",
 ]
@@ -18,7 +18,7 @@ dev = [
     "pre-commit>=4.0",
     "pytest>=8.3",
     "pytest-cov>=6.0",
-    "ruff>=0.8",
+    "ruff>=0.17.4",
 ]
 
 [build-system]
